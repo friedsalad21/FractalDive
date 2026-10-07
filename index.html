@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>FractalDive</title>
+<meta name="description" content="GPU Mandelbrot / Julia explorer with perturbation deep zoom, smooth palettes and shareable links.">
+<style>
+  :root { --bg: #05060a; --panel: rgba(14,16,26,.82); --line: rgba(255,255,255,.12); --text: #e8ebf5; --dim: #9aa1b8; --accent: #7cc4ff; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas#gl { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; display: block; }
+  canvas#gl.dragging { cursor: grabbing; }
+  canvas#gl.julia { cursor: crosshair; }
+  #hud { position: fixed; left: 10px; top: 10px; padding: 7px 10px; background: rgba(0,0,0,.45); border-radius: 8px; font: 11.5px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; pointer-events: none; max-width: min(560px, calc(100vw - 80px)); word-break: break-all; backdrop-filter: blur(4px); }
+  #hud b { color: var(--accent); font-weight: 600; }
+  #hud .dim { color: var(--dim); }
+  #bar { position: fixed; left: 0; top: 0; height: 2px; background: var(--accent); width: 0; opacity: .8; pointer-events: none; }
+  .fab { position: fixed; right: 12px; display: flex; flex-direction: column; gap: 6px; }
+  #zoomBtns { bottom: 12px; }
+  .round { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 20px; line-height: 1; cursor: pointer; backdrop-filter: blur(6px); display: grid; place-items: center; }
+  .round:hover { border-color: var(--accent); }
+  #menuBtn { position: fixed; right: 12px; top: 10px; z-index: 3; }
+  #panel { position: fixed; right: 0; top: 0; bottom: 0; width: min(310px, 88vw); background: var(--panel); backdrop-filter: blur(10px); border-left: 1px solid var(--line); padding: 14px 14px 20px; overflow-y: auto; transform: translateX(100%); transition: transform .2s ease; z-index: 2; }
+  body.open #panel { transform: none; }
+  body.open #zoomBtns { right: calc(min(310px, 88vw) + 12px); }
+  #panel h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: .5px; }
+  #panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); margin: 16px 0 6px; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .row label { flex: 0 0 62px; color: var(--dim); }
+  .row input[type=range] { flex: 1; accent-color: var(--accent); }
+  select, input[type=number], button.btn { background: rgba(255,255,255,.06); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  select { width: 100%; }
+  select option { background: #151824; }
+  button.btn { cursor: pointer; }
+  button.btn:hover { border-color: var(--accent); }
+  button.btn.on { background: rgba(124,196,255,.2); border-color: var(--accent); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grid2 .btn { width: 100%; text-align: left; }
+  #pals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .pal { height: 30px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; position: relative; padding: 0; }
+  .pal span { position: absolute; left: 4px; bottom: 1px; font-size: 10px; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; }
+  .pal.on { border-color: #fff; }
+  .chk { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  #juliaInfo { color: var(--dim); font-size: 12px; word-break: break-all; }
+  .keys { color: var(--dim); font-size: 11.5px; line-height: 1.6; }
+  .keys kbd { background: rgba(255,255,255,.08); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font: 11px ui-monospace, monospace; color: var(--text); }
+  #inset { position: fixed; left: 12px; bottom: 12px; border: 1px solid rgba(255,255,255,.5); border-radius: 4px; pointer-events: none; display: none; box-shadow: 0 0 0 1px #000; }
+  #inset div { position: absolute; left: 0; right: 0; bottom: 100%; font: 10.5px ui-monospace, monospace; color: #fff; text-shadow: 0 0 3px #000; padding-bottom: 2px; white-space: nowrap; overflow: hidden; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: rgba(0,0,0,.8); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 5; }
+  #toast.show { opacity: 1; }
+  #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 30px; font-size: 15px; }
+  #test { position: fixed; left: 10px; bottom: 10px; max-width: 90vw; background: #000d; padding: 10px 14px; border-radius: 8px; font: 12px ui-monospace, monospace; z-index: 9; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="bar"></div>
+<div id="hud"></div>
+<div id="inset"><div></div></div>
+<button class="round" id="menuBtn" title="Controls (H)">☰</button>
+<div class="fab" id="zoomBtns">
+  <button class="round" id="zin" title="Zoom in (+)">+</button>
+  <button class="round" id="zout" title="Zoom out (−)">−</button>
+  <button class="round" id="zreset" title="Reset view (R)">⟲</button>
+</div>
+<aside id="panel">
+  <h1>FractalDive</h1>
+  <h2>Fractal</h2>
+  <select id="type">
+    <option value="mandel">Mandelbrot</option>
+    <option value="ship">Burning Ship</option>
+    <option value="tricorn">Tricorn</option>
+    <option value="multi3">Multibrot (power 3)</option>
+    <option value="multi4">Multibrot (power 4)</option>
+    <option value="multi5">Multibrot (power 5)</option>
+  </select>
+  <div class="row" id="juliaParent">
+    <button class="btn" id="jPreview" title="J">Julia preview</button>
+    <button class="btn" id="jCentre">Julia at centre</button>
+  </div>
+  <div id="juliaChild" hidden>
+    <div id="juliaInfo"></div>
+    <div class="row"><button class="btn" id="jBack">← Back to parent</button></div>
+  </div>
+  <div class="keys" id="jHint" hidden>Hover to preview, click to open that Julia set.</div>
+
+  <h2>Famous spots</h2>
+  <div class="grid2" id="spots"></div>
+
+  <h2>Colour</h2>
+  <div id="pals"></div>
+  <div class="row"><label>Offset</label><input type="range" id="off" min="0" max="1" step="0.001"></div>
+  <div class="row"><label>Density</label><input type="range" id="den" min="-5" max="5" step="0.01"></div>
+  <label class="chk"><input type="checkbox" id="cyc"> Cycle colours slowly</label>
+
+  <h2>Iterations</h2>
+  <div class="row">
+    <label class="chk" style="flex:0 0 auto"><input type="checkbox" id="itAuto"> Auto</label>
+    <input type="number" id="it" min="16" max="1000000" step="1" style="flex:1">
+  </div>
+
+  <h2>Share &amp; save</h2>
+  <div class="row"><button class="btn" id="copy" style="flex:1">Copy link</button></div>
+  <div class="row">
+    <select id="mult" style="flex:1"><option value="1">Screen size</option><option value="2">2× (wallpaper)</option><option value="4">4× (huge)</option></select>
+    <button class="btn" id="save">Save PNG</button>
+  </div>
+  <div class="row"><button class="btn" id="dive" style="flex:1">▶ Dive here from full view</button></div>
+
+  <h2>Keys</h2>
+  <div class="keys">
+    Scroll / pinch zoom · drag pan · double-click zoom in (shift: out)<br>
+    <kbd>←↑→↓</kbd> pan · <kbd>+</kbd><kbd>−</kbd> zoom · <kbd>R</kbd> reset<br>
+    <kbd>P</kbd> palette · <kbd>J</kbd> Julia · <kbd>D</kbd> dive · <kbd>C</kbd> copy link · <kbd>H</kbd> panel · <kbd>Esc</kbd> stop
+  </div>
+</aside>
+<div id="toast"></div>
+<div id="err"></div>
+
+<script>
+'use strict';
+// ---------- high-precision fixed point (BigInt, FRAC fractional bits) ----------
+const FRAC = 320, FRACn = 320n, HALF = 1n << (FRACn - 1n);
+const toNum = v => Number(v) * 2 ** -FRAC;
+const addNum = (v, n) => v + BigInt(Math.round(n * 2 ** FRAC));
+function fmt(v, digits) {               // BigInt fixed -> decimal string, rounded, trailing zeros trimmed
+  const neg = v < 0n; if (neg) v = -v;
+  const n = (v * 10n ** BigInt(digits) + HALF) >> FRACn;
+  let s = n.toString().padStart(digits + 1, '0');
+  s = (s.slice(0, -digits) + '.' + s.slice(-digits)).replace(/\.?0+$/, '');
+  return (neg && n ? '-' : '') + s;
+}
+function parse(str) {                    // decimal string -> BigInt fixed, or null
+  const m = /^\s*(-?)(\d*)(?:\.(\d*))?\s*$/.exec(str || '');
+  if (!m || !(m[2] || m[3])) return null;
+  const f = (m[3] || '').slice(0, 95), p = 10n ** BigInt(f.length);
+  const v = ((BigInt((m[2] || '0') + f) << FRACn) + p / 2n) / p;
+  return m[1] ? -v : v;
+}
+const digitsFor = z => Math.min(90, Math.max(12, Math.ceil(-Math.log10(z)) + 8));
+
+// ---------- state + URL ----------
+const TYPES = { mandel: [0, 2], ship: [1, 2], tricorn: [2, 2], multi3: [3, 3], multi4: [3, 4], multi5: [3, 5] };
+const HOME = { mandel: ['-0.75', '0', 1.35], ship: ['-0.35', '0.55', 1.75], tricorn: ['-0.25', '0', 1.6], multi3: ['0', '0', 1.4], multi4: ['-0.1', '0', 1.4], multi5: ['0', '0', 1.4], julia: ['0', '0', 1.6] };
+const ZMIN = 1e-66, ZMAX = 8;
+function defaults(type = 'mandel') {
+  const h = HOME[type];
+  return { type, julia: false, kx: 0n, ky: 0n, x: parse(h[0]), y: parse(h[1]), z: h[2], it: 0, pal: 'classic', off: 0, den: 1, cyc: false };
+}
+function encode(s) {
+  const D = digitsFor(s.z), q = new URLSearchParams();
+  q.set('f', s.type);
+  if (s.julia) { q.set('jx', fmt(s.kx, 90)); q.set('jy', fmt(s.ky, 90)); }
+  q.set('x', fmt(s.x, D)); q.set('y', fmt(s.y, D)); q.set('z', String(s.z));
+  q.set('it', s.it ? String(s.it) : 'auto');
+  q.set('pal', s.pal); q.set('off', String(s.off)); q.set('den', String(s.den));
+  if (s.cyc) q.set('cyc', '1');
+  return q.toString();
+}
+function decode(hash, base = defaults()) {
+  const q = new URLSearchParams(hash.replace(/^#/, '')), s = { ...base };
+  const num = (k, lo, hi) => { const v = Number(q.get(k)); return q.has(k) && isFinite(v) && v >= lo && v <= hi ? v : null; };
+  if (TYPES[q.get('f')]) s.type = q.get('f');
+  const jx = parse(q.get('jx')), jy = parse(q.get('jy'));
+  s.julia = jx !== null && jy !== null;
+  if (s.julia) { s.kx = jx; s.ky = jy; } else { s.kx = s.ky = 0n; }
+  const x = parse(q.get('x')), y = parse(q.get('y'));
+  if (x !== null && y !== null) { s.x = x; s.y = y; }
+  const z = num('z', ZMIN, ZMAX); if (z) s.z = z;
+  const it = q.get('it'); if (it === 'auto') s.it = 0; else if (num('it', 16, 1e6)) s.it = Math.round(num('it', 16, 1e6));
+  if (PAL_BY_NAME[q.get('pal')] !== undefined) s.pal = q.get('pal');
+  const off = num('off', 0, 1); if (off !== null) s.off = off;
+  const den = num('den', 1 / 64, 64); if (den !== null) s.den = den;
+  if (q.has('cyc')) s.cyc = q.get('cyc') === '1';
+  return s;
+}
+const autoIter = z => Math.round(250 + 45 * Math.max(0, Math.log10(1.5 / z)) ** 1.65);
+let boost = 1, boostZ = 1;               // auto mode doubles iterations when a probe says the view needs more
+const maxIter = () => S.it || autoIter(S.z) * (Math.abs(Math.log10(S.z / boostZ)) < 1 ? boost : 1);
+
+// ---------- palettes ----------
+const PALETTES = [
+  ['classic', ['#000764', '#206bcb', '#edffff', '#ffaa00', '#000200']],
+  ['fire', ['#000000', '#3b0000', '#a01000', '#f05a00', '#ffc000', '#fff6c8', '#ff9a00', '#801000']],
+  ['ocean', ['#00061a', '#00265c', '#005f8f', '#1fb3c4', '#b8f4f0', '#2a8fb8', '#003a6b']],
+  ['neon', ['#05000f', '#ff00c8', '#20004a', '#00f0ff', '#001a40', '#b6ff00', '#2b0030']],
+  ['grey', ['#000000', '#ffffff']],
+  ['rainbow', ['#ff0000', '#ff9900', '#ffff00', '#33ff00', '#00ffcc', '#0066ff', '#9900ff', '#ff00aa']],
+  ['sunset', ['#120024', '#5b0a5e', '#c22d6b', '#ff7a45', '#ffd166', '#ff9e7a', '#7a1f6e']],
+  ['forest', ['#030d05', '#0d3b16', '#3f8a2c', '#c6e05a', '#f6e7a1', '#8a5a2b', '#24170a']],
+  ['ice', ['#ffffff', '#bfe8ff', '#4aa3df', '#123c8c', '#020a24', '#2c6fbf', '#9fd9ff']],
+  ['gold', ['#100800', '#4a2600', '#b8731f', '#ffd27a', '#fff5dd', '#c9963c', '#3a1d05']],
+  ['candy', ['#ff5fa2', '#ffd1e8', '#8d5cff', '#3ad8ff', '#fffbe0', '#ff8f5f']],
+  ['ink', ['#f4ecd8', '#f4ecd8', '#1b1b2f', '#4b3f72', '#f4ecd8']],
+];
+const PAL_BY_NAME = Object.fromEntries(PALETTES.map((p, i) => [p[0], i]));
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function paletteBytes() {                 // 256 cyclic samples per palette, one row each
+  const out = new Uint8Array(256 * 4 * PALETTES.length);
+  PALETTES.forEach(([, stops], r) => {
+    const c = stops.map(hex), n = c.length;
+    for (let i = 0; i < 256; i++) {
+      const t = i / 256 * n, a = Math.floor(t), f = t - a, A = c[a % n], B = c[(a + 1) % n];
+      for (let k = 0; k < 3; k++) out[(r * 256 + i) * 4 + k] = Math.round(A[k] + (B[k] - A[k]) * f);
+      out[(r * 256 + i) * 4 + 3] = 255;
+    }
+  });
+  return out;
+}
+
+// ---------- famous spots ----------
+const SPOTS = [
+  ['Seahorse Valley', 'f=mandel&x=-0.7453&y=0.1127&z=0.0065'],
+  ['Elephant Valley', 'f=mandel&x=0.2925&y=0.0149&z=0.0085'],
+  ['Mini-Mandelbrot', 'f=mandel&x=-1.754877666246692760049508896358528691894606617772793143989&y=0&z=0.022'],
+  ['Spiral', 'f=mandel&x=-0.7746806106269039&y=-0.1374168856037867&z=1.6e-12'],
+  ['Deep mini (1e-15)', 'f=mandel&x=-0.74364388703715887077806454349364257504761&y=0.13182590420531229282109735487476726526299&z=2.5e-15'],
+  ['Deep showpiece (1e-32)', 'f=mandel&x=-0.7436438870371587047521915061147797782152562079481812898168839018185607&y=0.1318259042053119704931320563851406789729522793289189662091276774655134&z=2.6e-32&pal=fire&den=0.08'],
+  ['Burning Ship armada', 'f=ship&x=-1.7625&y=0.0285&z=0.045'],
+  ['Spiral Julia', 'f=mandel&jx=-0.8&jy=0.156&x=0&y=0&z=1.4'],
+];
+
+// ---------- GL ----------
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { antialias: false, depth: false, alpha: false, preserveDrawingBuffer: false });
+function fail(msg) { const e = document.getElementById('err'); e.textContent = msg; e.style.display = 'grid'; throw new Error(msg); }
+if (!gl) fail('FractalDive needs WebGL 2, which this browser or device does not support.');
+if (!gl.getExtension('EXT_color_buffer_float')) fail('FractalDive needs float render targets (EXT_color_buffer_float), which this GPU/browser does not support.');
+
+const VS = `#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2. - 1., 0., 1.); }`;
+
+// Iteration pass: perturbation around a reference orbit Z (texture), with Zhuoran's rebasing.
+// Deltas are kept in units of 2^E; for very deep zooms (uDeep) they start in a linear, scaled phase
+// and switch to plain floats once they are big enough to be normal float32 numbers.
+// uZeroRef = 1 means Z == 0 everywhere, which turns the same loop into plain float iteration.
+const ITER_FS = TYPE => `#version 300 es
+precision highp float; precision highp int;
+#define TYPE ${TYPE}
+uniform sampler2D uOrbit;
+uniform int uPower, uMaxIter, uJulia, uZeroRef, uDeep, uLenA, uRebStart, uRebEnd;
+uniform vec2 uImg, uOrigin, uOffset, uJC;
+uniform float uPix, uThresh, uUnit, uUnit2;
+out vec4 o;
+vec2 cmul(vec2 a, vec2 b) { return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+vec2 Zat(int m) { return uZeroRef == 1 ? vec2(0) : texelFetch(uOrbit, ivec2(m & 2047, m >> 11), 0).xy; }
+float diffabs(float a, float b, float s) {   // (|a + s*b| - |a|) / s, exact for s == 0 too
+  float ab = a + s*b;
+  if (a >= 0.) return ab >= 0. ? b : -(2.*a/s + b);
+  return ab > 0. ? 2.*a/s + b : -b;
+}
+vec2 pstep(vec2 Z, vec2 d, float s) {        // (f(Z + s d) - f(Z)) / s, without the + c
+  vec2 z = Z + s*d;
+#if TYPE == 1
+  return vec2(d.x*(Z.x + z.x) - d.y*(Z.y + z.y), -2.*diffabs(Z.x*Z.y, Z.x*d.y + d.x*z.y, s));
+#elif TYPE == 3
+  vec2 S = vec2(1, 0), P = vec2(1, 0);
+  for (int i = 1; i < uPower; i++) { P = cmul(P, Z); S = cmul(z, S) + P; }
+  return cmul(d, S);
+#else
+  vec2 r = cmul(d, Z + z);
+  return TYPE == 2 ? vec2(r.x, -r.y) : r;
+#endif
+}
+void main() {
+  vec2 p = (gl_FragCoord.xy + uOrigin - 0.5*uImg) * uPix + uOffset;
+  vec2 d = uJulia == 1 ? p : vec2(0), dc = uJulia == 1 ? uJC : p, z = vec2(0);
+  float s = uDeep == 1 ? 0. : 1.;
+  int m = 0, lim = uLenA - 1, n = 0;
+  vec2 Z = Zat(0);
+  for (; n < uMaxIter; n++) {
+    d = pstep(Z, d, s) + dc;
+    m++; Z = Zat(m);
+    if (s == 0.) {
+      if (max(abs(d.x), abs(d.y)) > uThresh) { d *= uUnit; d *= uUnit2; dc *= uUnit; dc *= uUnit2; s = 1.; }
+      else { if (m == lim) { z = Z; break; } continue; }
+    }
+    z = Z + d;
+    float r2 = dot(z, z);
+    if (r2 > 65536.) break;
+    if (r2 < dot(d, d) || m == lim) { d = z; m = uRebStart; lim = uRebEnd; Z = Zat(m); }
+  }
+  float r2 = dot(z, z);
+  o = vec4(r2 > 65536. ? float(n) - log2(log2(r2) / 16.) / log2(float(uPower)) : -1., 0, 0, 1);
+}`;
+
+// Colour pass: iteration value -> palette, bilinear in colour space; rows >= uHiFrom use the hi-res texture.
+const COL_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uHi, uLo, uPal;
+uniform vec2 uHiSize, uLoSize, uDst, uDstOrigin;
+uniform float uHiFrom, uDensity, uOffset, uRow;
+out vec4 o;
+vec3 col(float v) { return v < 0. ? vec3(0) : texture(uPal, vec2(v * uDensity + uOffset, uRow)).rgb; }
+vec3 samp(sampler2D t, vec2 size, vec2 uv) {
+  vec2 q = uv * size - 0.5, f = fract(q);
+  ivec2 i = ivec2(floor(q)), mx = ivec2(size) - 1;
+  vec3 a = col(texelFetch(t, clamp(i, ivec2(0), mx), 0).r), b = col(texelFetch(t, clamp(i + ivec2(1, 0), ivec2(0), mx), 0).r);
+  vec3 c = col(texelFetch(t, clamp(i + ivec2(0, 1), ivec2(0), mx), 0).r), e = col(texelFetch(t, clamp(i + ivec2(1), ivec2(0), mx), 0).r);
+  return mix(mix(a, b, f.x), mix(c, e, f.x), f.y);
+}
+void main() {
+  vec2 uv = (gl_FragCoord.xy - uDstOrigin) / uDst;
+  o = vec4(gl_FragCoord.y - uDstOrigin.y >= uHiFrom ? samp(uHi, uHiSize, uv) : samp(uLo, uLoSize, uv), 1);
+}`;
+
+function program(fs) {
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, fs]]) {
+    const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) fail('Shader error: ' + gl.getShaderInfoLog(sh));
+    gl.attachShader(p, sh);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail('Link error: ' + gl.getProgramInfoLog(p));
+  const u = {}, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+  return { p, u };
+}
+const iterProgs = {}, iterProg = t => iterProgs[t] || (iterProgs[t] = program(ITER_FS(t)));
+const colProg = program(COL_FS);
+
+function tex(w, h, fmt = gl.R32F, filter = gl.NEAREST) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  if (w) gl.texStorage2D(gl.TEXTURE_2D, 1, fmt, w, h);
+  return t;
+}
+function target(w, h, fmt) {
+  const t = tex(w, h, fmt), fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  return { t, fb, w, h, free() { gl.deleteTexture(t); gl.deleteFramebuffer(fb); } };
+}
+const palTex = tex(0, 0, 0, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, PALETTES.length, 0, gl.RGBA, gl.UNSIGNED_BYTE, paletteBytes());
+const orbitTex = tex(0, 0);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 1, 1, 0, gl.RG, gl.FLOAT, new Float32Array(2));
+gl.bindVertexArray(gl.createVertexArray());
+
+// ---------- reference orbits (Web Worker, BigInt fixed point) ----------
+function workerMain() {
+  onmessage = e => {
+    const { id, t, power, julia, cx, cy, kx, ky, bits, iter } = e.data, P = BigInt(bits), inv = 2 ** -bits;
+    function orbit(zx, zy, ax, ay) {
+      const out = new Float32Array((iter + 1) * 2);
+      let n = 0, esc = false;
+      for (; n <= iter; n++) {
+        const fx = Number(zx) * inv, fy = Number(zy) * inv;
+        out[2 * n] = fx; out[2 * n + 1] = fy;
+        if (fx * fx + fy * fy > 65536) { esc = true; n++; break; }
+        if (t === 3) {
+          let wx = zx, wy = zy;
+          for (let k = 1; k < power; k++) [wx, wy] = [(wx * zx - wy * zy) >> P, (wx * zy + wy * zx) >> P];
+          zx = wx + ax; zy = wy + ay;
+        } else {
+          const xx = (zx * zx) >> P, yy = (zy * zy) >> P, xy = (zx * zy) >> P;
+          zx = xx - yy + ax;
+          zy = t === 1 ? (xy < 0n ? 2n * xy : -2n * xy) + ay : t === 2 ? -2n * xy + ay : 2n * xy + ay;
+        }
+      }
+      return { data: out.subarray(0, 2 * n), len: Math.min(n, iter + 1), esc };
+    }
+    const A = julia ? orbit(cx, cy, kx, ky) : orbit(0n, 0n, cx, cy);
+    const B = julia ? orbit(0n, 0n, kx, ky) : null;
+    postMessage({ id, A, B });
+  };
+}
+const worker = new Worker(URL.createObjectURL(new Blob([`(${workerMain})()`], { type: 'text/javascript' })));
+let ref = null, pending = null, reqId = 0;
+const DIRECT = 4e-3, DEEP = 1e-28;
+const refKey = () => S.type + (S.julia ? '|' + S.kx + ',' + S.ky : '');
+const bitsFor = z => Math.min(FRAC, Math.max(64, Math.ceil(-Math.log2(z)) + 48));
+function refOk(r, z = S.z) {
+  if (!r || r.key !== refKey() || r.bits < bitsFor(z)) return false;
+  if (Math.min(r.capA, r.capB) < maxIter()) return false;
+  const u = 2 ** -FRAC;
+  return Math.abs(Number(S.x - r.x) * u) <= z && Math.abs(Number(S.y - r.y) * u) <= z;
+}
+function ensureRef() {
+  if (S.z > DIRECT || refOk(ref) || pending) return;
+  const bits = Math.min(FRAC, bitsFor(S.z) + 32), sh = BigInt(FRAC - bits), tr = v => v >> sh;
+  pending = { id: ++reqId, key: refKey(), x: tr(S.x) << sh, y: tr(S.y) << sh, bits, iter: Math.ceil(maxIter() * 1.5) };
+  const [t, power] = TYPES[S.type];
+  worker.postMessage({ id: pending.id, t, power, julia: S.julia, cx: tr(S.x), cy: tr(S.y), kx: tr(S.kx), ky: tr(S.ky), bits, iter: pending.iter });
+}
+worker.onmessage = e => {
+  const r = pending, { id, A, B } = e.data;
+  pending = null;
+  if (!r || r.id !== id) return;
+  if (r.key === refKey()) {
+    const len = A.len + (B ? B.len : 0), rows = Math.ceil(len / 2048), data = new Float32Array(rows * 2048 * 2);
+    data.set(A.data); if (B) data.set(B.data, A.len * 2);
+    gl.bindTexture(gl.TEXTURE_2D, orbitTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, 2048, rows, 0, gl.RG, gl.FLOAT, data);
+    const cap = o => o.esc ? Infinity : o.len - 1;
+    ref = { ...r, lenA: A.len, lenB: B ? B.len : 0, capA: cap(A), capB: B ? cap(B) : Infinity };
+    dirtyView = true;
+  }
+  kick();
+};
+
+// Uniforms for an iteration pass. img = full image size in pixels, or null if we must wait for a reference.
+function iterUniforms(z = S.z) {
+  const [t, power] = TYPES[S.type], J = S.julia ? 1 : 0;
+  if (z > DIRECT) return { t, power, J, zero: 1, deep: 0, E: 0, off: [toNum(S.x), toNum(S.y)], jc: J ? [toNum(S.kx), toNum(S.ky)] : [0, 0], lenA: 1 << 30, reb: 0, rebEnd: 1 << 30 };
+  if (!ref || ref.key !== refKey()) return null;
+  const E = z < DEEP ? Math.floor(Math.log2(z)) : 0, k = 2 ** (-FRAC - E);
+  return { t, power, J, zero: 0, deep: E ? 1 : 0, E, off: [Number(S.x - ref.x) * k, Number(S.y - ref.y) * k], jc: [0, 0],
+    lenA: ref.lenA, reb: J ? ref.lenA : 0, rebEnd: J ? ref.lenA + ref.lenB - 1 : ref.lenA - 1 };
+}
+// Render the iteration value for image pixels [origin, origin + w×h) of an imgW×imgH image into target tg.
+function iterPass(U, tg, w, h, imgW, imgH, ox = 0, oy = 0, z = S.z, iters = maxIter(), scissor = null) {
+  const { p, u } = iterProg(U.t);
+  gl.useProgram(p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, tg.fb); gl.viewport(0, 0, w, h);
+  if (scissor) { gl.enable(gl.SCISSOR_TEST); gl.scissor(...scissor); }
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, orbitTex); gl.uniform1i(u.uOrbit, 0);
+  gl.uniform1i(u.uPower, U.power); gl.uniform1i(u.uMaxIter, iters); gl.uniform1i(u.uJulia, U.J);
+  gl.uniform1i(u.uZeroRef, U.zero); gl.uniform1i(u.uDeep, U.deep);
+  gl.uniform1i(u.uLenA, U.lenA); gl.uniform1i(u.uRebStart, U.reb); gl.uniform1i(u.uRebEnd, U.rebEnd);
+  gl.uniform2f(u.uImg, imgW, imgH); gl.uniform2f(u.uOrigin, ox, oy); gl.uniform2f(u.uOffset, ...U.off); gl.uniform2f(u.uJC, ...U.jc);
+  gl.uniform1f(u.uPix, z / (Math.min(imgW, imgH) / 2) * 2 ** -U.E);
+  gl.uniform1f(u.uThresh, 2 ** (-100 - U.E)); gl.uniform1f(u.uUnit, 2 ** (U.E + 100)); gl.uniform1f(u.uUnit2, 2 ** -100);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.SCISSOR_TEST);
+}
+function colourPass(fb, dst, hi, hiSize, lo, loSize, hiFrom) {
+  const { p, u } = colProg;
+  gl.useProgram(p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb); gl.viewport(...dst);
+  [[hi, u.uHi], [lo, u.uLo], [palTex, u.uPal]].forEach(([t, loc], i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(loc, i); });
+  gl.uniform2f(u.uHiSize, ...hiSize); gl.uniform2f(u.uLoSize, ...loSize);
+  gl.uniform2f(u.uDst, dst[2], dst[3]); gl.uniform2f(u.uDstOrigin, dst[0], dst[1]);
+  gl.uniform1f(u.uHiFrom, hiFrom); gl.uniform1f(u.uDensity, 0.03 * S.den);
+  gl.uniform1f(u.uOffset, S.off + colourTime); gl.uniform1f(u.uRow, (PAL_BY_NAME[S.pal] + 0.5) / PALETTES.length);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ---------- render loop: quick low-res frame on every change, then refine to full res in strips ----------
+let S = defaults(), W = 0, H = 0, dpr = 1, lo = null, hi = null, pv = null;
+let dirtyView = true, dirtyColour = true, raf = 0, lastT = 0, lastChange = 0, lastKind = '';
+let loF = 0.5, loW = 1, loH = 1, loFinal = false, hiDone = 0, strip = 32, colourTime = 0, busy = false, dive = null;
+const preview = { on: false, show: false, kx: 0, ky: 0, dirty: false, size: 0 };
+function kick() { if (!raf && !busy) raf = requestAnimationFrame(frame); }
+function changed() { dirtyView = true; lastChange = performance.now(); kick(); scheduleHash(); }
+function resize() {
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.round(innerWidth * dpr)), h = Math.max(1, Math.round(innerHeight * dpr));
+  if (w === W && h === H) return;
+  W = canvas.width = w; H = canvas.height = h;
+  lo && lo.free(); hi && hi.free();
+  lo = target(W, H, gl.R32F); hi = target(W, H, gl.R32F);
+  dirtyView = true;
+}
+function frame(t) {
+  raf = 0;
+  const dt = lastT ? t - lastT : 16; lastT = t;
+  resize();
+  if (dive) stepDive(t);
+  ensureRef();
+  const U = iterUniforms();
+  if (dirtyView && U) {
+    if (lastKind === 'lo' && dt < 250) loF *= dt > 34 ? 0.8 : dt < 20 ? 1.1 : 1;
+    loF = Math.min(1, Math.sqrt(2e9 / (W * H * maxIter())), Math.max(0.08, loF));   // cap so one frame can't stall the GPU
+    loW = Math.max(1, Math.round(W * loF)); loH = Math.max(1, Math.round(H * loF));
+    iterPass(U, lo, loW, loH, loW, loH);
+    loFinal = loF >= 1; hiDone = loFinal ? H : 0; dirtyView = false; dirtyColour = true; lastKind = 'lo'; probed = false;
+    strip = Math.max(1, Math.min(H, Math.floor(1.5e8 / (W * maxIter()))));
+  } else if (!dirtyView && !probed && U && (S.z > DIRECT || refOk(ref)) && performance.now() - lastChange > 150) {
+    probed = true; lastKind = '';
+    if (!S.it && needsMoreIter(U)) { boost = Math.abs(Math.log10(S.z / boostZ)) < 1 ? boost * 2 : 2; boostZ = S.z; syncUI(); changed(); }
+  } else if (!dirtyView && U && hiDone < H && performance.now() - lastChange > 150) {
+    if (lastKind === 'strip' && dt < 250) strip = Math.max(2, Math.min(H, Math.round(strip * (dt > 40 ? 0.6 : dt < 24 ? 1.5 : 1))));
+    const y0 = Math.max(0, H - hiDone - strip);
+    iterPass(U, hi, W, H, W, H, 0, 0, S.z, maxIter(), [0, y0, W, H - hiDone - y0]);
+    hiDone = H - y0; dirtyColour = true; lastKind = 'strip';
+  } else lastKind = '';
+  if (S.cyc) { colourTime = (colourTime + Math.min(dt, 50) * 4e-5) % 1; dirtyColour = true; }
+  if (preview.dirty && preview.show) renderPreview();
+  if (dirtyColour) {
+    colourPass(null, [0, 0, W, H], hi.t, [W, H], lo.t, [loW, loH], loFinal ? H + 1 : H - hiDone);
+    if (preview.show) { const s = preview.size; colourPass(null, [Math.round(12 * dpr), Math.round(12 * dpr), s, s], pv.t, [s, s], pv.t, [s, s], 0); }
+    dirtyColour = false;
+  }
+  hud(U);
+  if ((U && (dirtyView || hiDone < H)) || S.cyc || dive) kick();   // no U: waiting for the worker, whose reply kicks
+}
+// Tiny probe render of the view: true if nothing escapes, or everything escapes late (deep near a minibrot).
+let probeT = null, probed = false;
+function needsMoreIter(U) {
+  if (boost >= 16 && Math.abs(Math.log10(S.z / boostZ)) < 1) return false;
+  const pw = 64, ph = Math.max(1, Math.min(64, Math.round(64 * H / W))), it = maxIter(), b = new Float32Array(pw * ph * 4);
+  probeT = probeT || target(64, 64, gl.R32F);
+  iterPass(U, probeT, pw, ph, pw, ph);
+  gl.readPixels(0, 0, pw, ph, gl.RGBA, gl.FLOAT, b);
+  let min = Infinity;
+  for (let i = 0; i < b.length; i += 4) if (b[i] >= 0) min = Math.min(min, b[i]);
+  return min > 0.5 * it;
+}
+function renderPreview() {
+  const s = Math.round(170 * dpr);
+  if (!pv || preview.size !== s) { pv && pv.free(); pv = target(s, s, gl.R32F); preview.size = s; }
+  const [t, power] = TYPES[S.type];
+  iterPass({ t, power, J: 1, zero: 1, deep: 0, E: 0, off: [0, 0], jc: [preview.kx, preview.ky], lenA: 1 << 30, reb: 0, rebEnd: 1 << 30 }, pv, s, s, s, s, 0, 0, 1.5, 400);
+  preview.dirty = false; dirtyColour = true;
+}
+
+// ---------- HUD ----------
+const $ = id => document.getElementById(id);
+const fmtZ = z => z >= 0.01 ? z.toPrecision(3) : z.toExponential(2);
+function hud(U) {
+  const D = digitsFor(S.z) - 5, it = maxIter();
+  const mode = S.z > DIRECT ? 'GPU float' : !U ? 'computing reference orbit…' : ref && !refOk(ref) ? 'perturbation (updating reference…)' : U.deep ? 'perturbation, scaled' : 'perturbation';
+  $('hud').innerHTML = `<b>zoom</b> ${fmtZ(S.z)}  <span class="dim">×${(1.5 / S.z).toExponential(1)}</span><br>` +
+    `<b>re</b> ${fmt(S.x, D)}<br><b>im</b> ${fmt(S.y, D)}<br>` +
+    (S.julia ? `<b>julia c</b> ${fmt(S.kx, 12)}, ${fmt(S.ky, 12)}<br>` : '') +
+    `<b>iter</b> ${it.toLocaleString()} ${S.it ? '' : '<span class="dim">auto</span>'} <span class="dim">· ${mode}</span>`;
+  if (document.activeElement !== $('it')) $('it').value = it;
+  $('bar').style.width = (hiDone >= H || loFinal ? 0 : hiDone / H * 100) + '%';
+}
+
+// ---------- view helpers ----------
+const units = () => S.z / (Math.min(innerWidth, innerHeight) / 2);      // complex units per CSS px
+const offsetOf = (sx, sy) => [(sx - innerWidth / 2) * units(), (innerHeight / 2 - sy) * units()];
+function zoomAt(sx, sy, k) {
+  const nz = Math.min(ZMAX, Math.max(ZMIN, S.z * k)); k = nz / S.z;
+  if (k === 1) return;
+  const [ox, oy] = offsetOf(sx, sy);
+  S.x = addNum(S.x, ox * (1 - k)); S.y = addNum(S.y, oy * (1 - k)); S.z = nz;
+  changed();
+}
+function pan(dx, dy) { S.x = addNum(S.x, -dx * units()); S.y = addNum(S.y, dy * units()); changed(); }
+function home() {
+  const h = HOME[S.julia ? 'julia' : S.type];
+  S.x = parse(h[0]); S.y = parse(h[1]); S.z = h[2]; changed();
+}
+function pointAt(sx, sy) {               // high-precision complex point under the cursor, rounded sensibly
+  const [ox, oy] = offsetOf(sx, sy), D = digitsFor(S.z);
+  return [parse(fmt(addNum(S.x, ox), D)), parse(fmt(addNum(S.y, oy), D))];
+}
+let parentView = null;
+function openJulia(kx, ky) {
+  stopDive();
+  parentView = { x: S.x, y: S.y, z: S.z };
+  S.julia = true; S.kx = kx; S.ky = ky;
+  setPreview(false); home(); syncUI();
+}
+function leaveJulia() {
+  stopDive();
+  const pv = parentView; S.julia = false; parentView = null;
+  if (pv) { S.x = pv.x; S.y = pv.y; S.z = pv.z; changed(); } else { S.x = S.kx; S.y = S.ky; S.z = 0.05; changed(); }
+  S.kx = S.ky = 0n; syncUI();
+}
+function setPreview(on) {
+  preview.on = on && !S.julia; preview.show = false;
+  $('inset').style.display = 'none'; $('jPreview').classList.toggle('on', preview.on);
+  $('jHint').hidden = !preview.on; canvas.classList.toggle('julia', preview.on);
+  dirtyColour = true; kick();
+}
+function setPal(name) { S.pal = name; dirtyColour = true; syncUI(); scheduleHash(); kick(); }
+
+// ---------- dive (autopilot) ----------
+function startDive() {
+  if (dive) return stopDive();
+  const z0 = HOME[S.julia ? 'julia' : S.type][2], z1 = S.z;
+  if (z1 >= z0) return toast('Zoom in somewhere first, then dive.');
+  dive = { t0: 0, z0, z1, dur: Math.max(3000, Math.log2(z0 / z1) / 1.8 * 1000) };
+  $('dive').textContent = '■ Stop dive'; kick();
+}
+function stepDive(t) {
+  if (!dive.t0) dive.t0 = t;
+  const u = Math.min(1, (t - dive.t0) / dive.dur), e = u * u * (3 - 2 * u);
+  S.z = u >= 1 ? dive.z1 : Math.exp(Math.log(dive.z0) + (Math.log(dive.z1) - Math.log(dive.z0)) * e);
+  dirtyView = true; lastChange = performance.now();
+  if (u >= 1) stopDive();
+}
+function stopDive() { if (!dive) return; dive = null; $('dive').textContent = '▶ Dive here from full view'; changed(); }
+
+// ---------- input ----------
+const pointers = new Map();
+let gesture = null, clickTimer = 0;
+canvas.addEventListener('pointerdown', e => {
+  stopDive(); try { canvas.setPointerCapture(e.pointerId); } catch {}
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY });
+  gesture = null; canvas.classList.add('dragging');
+});
+canvas.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) {
+    if (preview.on && e.pointerType === 'mouse') {
+      const [ox, oy] = offsetOf(e.clientX, e.clientY);
+      preview.kx = toNum(S.x) + ox; preview.ky = toNum(S.y) + oy; preview.show = preview.dirty = true;
+      const box = $('inset'); box.style.display = 'block'; box.style.width = box.style.height = Math.round(170 * dpr) / dpr + 'px';
+      box.firstChild.textContent = `c = ${preview.kx.toFixed(6)} ${preview.ky < 0 ? '−' : '+'} ${Math.abs(preview.ky).toFixed(6)}i`;
+      kick();
+    }
+    return;
+  }
+  if (pointers.size === 1) {
+    pan(e.clientX - p.x, e.clientY - p.y);
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const mid0 = [(a.x + b.x) / 2, (a.y + b.y) / 2], d0 = Math.hypot(a.x - b.x, a.y - b.y);
+    p.x = e.clientX; p.y = e.clientY;
+    const mid1 = [(a.x + b.x) / 2, (a.y + b.y) / 2], d1 = Math.hypot(a.x - b.x, a.y - b.y);
+    pan(mid1[0] - mid0[0], mid1[1] - mid0[1]);
+    if (d0 > 0 && d1 > 0) zoomAt(mid1[0], mid1[1], d0 / d1);
+    gesture = 'pinch';
+    return;
+  }
+  p.x = e.clientX; p.y = e.clientY;
+});
+function endPointer(e) {
+  const p = pointers.get(e.pointerId); if (!p) return;
+  pointers.delete(e.pointerId);
+  if (!pointers.size) canvas.classList.remove('dragging');
+  const still = Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 5;
+  if (e.type === 'pointerup' && still && !gesture && !pointers.size && preview.on) {
+    const pt = pointAt(e.clientX, e.clientY);
+    clearTimeout(clickTimer); clickTimer = setTimeout(() => openJulia(...pt), 260);   // wait: may be a double-click
+  }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('pointerleave', () => { if (preview.show) { preview.show = false; $('inset').style.display = 'none'; dirtyColour = true; kick(); } });
+canvas.addEventListener('dblclick', e => { clearTimeout(clickTimer); zoomAt(e.clientX, e.clientY, e.shiftKey ? 3 : 1 / 3); });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault(); stopDive();
+  const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+  zoomAt(e.clientX, e.clientY, Math.exp(Math.max(-300, Math.min(300, dy)) * 0.0018));
+}, { passive: false });
+addEventListener('resize', () => { dirtyView = true; kick(); });
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); writeHash(); toast('The GPU was reset, reloading…', 0); });
+canvas.addEventListener('webglcontextrestored', () => location.reload());   // the view lives in the URL hash
+addEventListener('keydown', e => {
+  if (e.target.closest('input, select') || e.ctrlKey || e.metaKey || e.altKey) return;
+  const step = Math.min(innerWidth, innerHeight) * 0.12, cx = innerWidth / 2, cy = innerHeight / 2;
+  const k = e.key, K = k.toLowerCase();
+  if (k !== 'Escape' && k !== 'd' && k !== 'D') stopDive();
+  if (k === 'ArrowLeft') pan(step, 0); else if (k === 'ArrowRight') pan(-step, 0);
+  else if (k === 'ArrowUp') pan(0, step); else if (k === 'ArrowDown') pan(0, -step);
+  else if (k === '+' || k === '=') zoomAt(cx, cy, 0.5); else if (k === '-' || k === '_') zoomAt(cx, cy, 2);
+  else if (K === 'p') { const i = PAL_BY_NAME[S.pal], n = PALETTES.length; setPal(PALETTES[(i + (e.shiftKey ? n - 1 : 1)) % n][0]); }
+  else if (K === 'j') S.julia ? leaveJulia() : setPreview(!preview.on);
+  else if (K === 'r') home();
+  else if (K === 'd') startDive();
+  else if (K === 'c') copyLink();
+  else if (K === 'h') document.body.classList.toggle('open');
+  else if (k === 'Escape') { stopDive(); setPreview(false); }
+  else return;
+  e.preventDefault();
+});
+
+// ---------- UI ----------
+function toast(msg, ms = 1800) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); if (ms) toast.t = setTimeout(() => t.classList.remove('show'), ms); }
+PALETTES.forEach(([name, stops]) => {
+  const b = document.createElement('button');
+  b.className = 'pal'; b.dataset.name = name; b.title = name;
+  b.style.background = `linear-gradient(90deg, ${stops.join(', ')}, ${stops[0]})`;
+  b.innerHTML = `<span>${name}</span>`;
+  b.onclick = () => setPal(name);
+  $('pals').appendChild(b);
+});
+SPOTS.forEach(([name, h]) => {
+  const b = document.createElement('button');
+  b.className = 'btn'; b.textContent = name;
+  b.onclick = () => { stopDive(); parentView = null; boost = 1; S = decode(h, { ...defaults(), pal: S.pal, cyc: S.cyc }); setPreview(false); syncUI(); changed(); };
+  $('spots').appendChild(b);
+});
+function syncUI() {
+  $('type').value = S.type;
+  $('juliaParent').hidden = S.julia; $('juliaChild').hidden = !S.julia;
+  if (S.julia) $('juliaInfo').textContent = `Julia set of c = ${fmt(S.kx, 16)} ${S.ky < 0n ? '−' : '+'} ${fmt(S.ky < 0n ? -S.ky : S.ky, 16)}i`;
+  document.querySelectorAll('.pal').forEach(b => b.classList.toggle('on', b.dataset.name === S.pal));
+  $('off').value = S.off; $('den').value = Math.log2(S.den); $('cyc').checked = S.cyc;
+  $('itAuto').checked = !S.it; $('it').disabled = !S.it; $('it').value = maxIter();
+}
+$('type').onchange = e => { stopDive(); boost = 1; const keep = S; S = { ...defaults(e.target.value), pal: keep.pal, off: keep.off, den: keep.den, cyc: keep.cyc }; parentView = null; setPreview(preview.on); syncUI(); changed(); };
+$('jPreview').onclick = () => setPreview(!preview.on);
+$('jCentre').onclick = () => openJulia(parse(fmt(S.x, digitsFor(S.z))), parse(fmt(S.y, digitsFor(S.z))));
+$('jBack').onclick = leaveJulia;
+$('off').oninput = e => { S.off = +e.target.value; dirtyColour = true; scheduleHash(); kick(); };
+$('den').oninput = e => { S.den = +(2 ** +e.target.value).toFixed(4); dirtyColour = true; scheduleHash(); kick(); };
+$('cyc').onchange = e => { S.cyc = e.target.checked; if (!S.cyc) { S.off = (S.off + colourTime) % 1; colourTime = 0; } syncUI(); scheduleHash(); kick(); };
+$('itAuto').onchange = e => { S.it = e.target.checked ? 0 : maxIter(); syncUI(); changed(); };
+$('it').onchange = e => { const v = Math.round(+e.target.value); if (v >= 16 && v <= 1e6) { S.it = v; changed(); } syncUI(); };
+$('menuBtn').onclick = () => document.body.classList.toggle('open');
+$('zin').onclick = () => { stopDive(); zoomAt(innerWidth / 2, innerHeight / 2, 0.5); };
+$('zout').onclick = () => { stopDive(); zoomAt(innerWidth / 2, innerHeight / 2, 2); };
+$('zreset').onclick = () => { stopDive(); home(); };
+$('copy').onclick = copyLink;
+$('dive').onclick = startDive;
+$('save').onclick = () => savePNG(+$('mult').value);
+
+let hashTimer = 0;
+function scheduleHash() { clearTimeout(hashTimer); hashTimer = setTimeout(writeHash, 300); }
+function writeHash() { if (!dive) history.replaceState(null, '', '#' + encode(S)); }
+async function copyLink() {
+  writeHash();
+  try { await navigator.clipboard.writeText(location.href); toast('Link copied'); }
+  catch { prompt('Copy this link:', location.href); }
+}
+addEventListener('hashchange', () => { stopDive(); parentView = null; boost = 1; S = decode(location.hash); syncUI(); changed(); });
+
+// ---------- save PNG (tiled, so huge images never stall the GPU) ----------
+async function savePNG(mult) {
+  if (busy) return;
+  stopDive();
+  if (S.z <= DIRECT) for (let i = 0; i < 600 && !refOk(ref); i++) { ensureRef(); await new Promise(r => setTimeout(r, 50)); }
+  const U = iterUniforms(); if (!U) return toast('Still computing the reference orbit, try again in a moment.');
+  busy = true;
+  const OW = W * mult, OH = H * mult, it = maxIter(), T = Math.max(64, Math.min(1024, Math.floor(Math.sqrt(3e8 / it))));
+  let out, ctx;
+  try { out = document.createElement('canvas'); out.width = OW; out.height = OH; ctx = out.getContext('2d'); if (!ctx) throw 0; }
+  catch { busy = false; kick(); return toast(`This browser can't make a ${OW}×${OH} image. Try a smaller size.`); }
+  const ti = target(T, T, gl.R32F), tc = target(T, T, gl.RGBA8), buf = new Uint8Array(T * T * 4);
+  const tiles = Math.ceil(OW / T) * Math.ceil(OH / T);
+  let done = 0;
+  for (let ty = 0; ty < OH; ty += T) for (let tx = 0; tx < OW; tx += T) {
+    const w = Math.min(T, OW - tx), h = Math.min(T, OH - ty);
+    iterPass(U, ti, w, h, OW, OH, tx, ty, S.z, it);
+    colourPass(tc.fb, [0, 0, w, h], ti.t, [w, h], ti.t, [w, h], 0);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const img = ctx.createImageData(w, h);
+    for (let r = 0; r < h; r++) img.data.set(buf.subarray((h - 1 - r) * w * 4, (h - r) * w * 4), r * w * 4);
+    ctx.putImageData(img, tx, OH - ty - h);
+    toast(`Rendering ${OW}×${OH}… ${Math.round(++done / tiles * 100)}%`, 0);
+    await new Promise(r => setTimeout(r));
+  }
+  ti.free(); tc.free();
+  out.toBlob(b => {
+    busy = false; kick();
+    if (!b) return toast('Could not encode the PNG (image too large?)');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b); a.download = `fractaldive-${S.type}${S.julia ? '-julia' : ''}-${fmtZ(S.z)}.png`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    toast(`Saved ${OW}×${OH} PNG`);
+  }, 'image/png');
+}
+
+// ---------- self-check: open index.html?test ----------
+function selfTest() {
+  const lines = [], ok = (c, m) => lines.push((c ? '✓ ' : '✗ ') + m);
+  const deep = 'f=mandel&x=-0.7436438870371587047521915061147797782152&y=0.1318259042053119704931320563851406789729&z=2.6e-32&it=40000&pal=fire&off=0.25&den=2.5&cyc=1';
+  const jul = 'f=ship&jx=-1.7625000000000000000000000000000000000000001&jy=0.0285&x=0.123456789012345&y=-0.5&z=1.23e-7&it=auto&pal=neon&off=0&den=1';
+  for (const h of [deep, jul, encode(defaults())]) {
+    const s1 = decode(h), h2 = encode(s1), s2 = decode(h2);
+    ok(h2 === h, 'encode(decode(h)) === h  [' + h.slice(0, 40) + '…]');
+    ok(Object.keys(s1).every(k => s1[k] === s2[k]), 'decode(encode(state)) restores every field');
+  }
+  const s = decode(deep);
+  ok(fmt(s.x, 40) === '-0.7436438870371587047521915061147797782152' && fmt(s.y, 40) === '0.1318259042053119704931320563851406789729', 'centre keeps all 40 digits at zoom 2.6e-32');
+  ok(s.z === 2.6e-32 && s.it === 40000 && s.pal === 'fire' && s.cyc === true, 'zoom, iterations, palette, cycling survive');
+  ok(decode(jul).julia && fmt(decode(jul).kx, 43) === '-1.7625000000000000000000000000000000000000001', 'Julia parameter keeps 43 digits');
+  const p = parse('-0.1'), q = addNum(p, 1e-40);
+  ok(fmt(q, 45) === '-0.0999999999999999999999999999999999999999', 'adding a tiny pan offset keeps precision');
+  const pass = lines.every(l => l[0] === '✓');
+  console[pass ? 'log' : 'error']('FractalDive self-test:\n' + lines.join('\n'));
+  const d = document.createElement('div'); d.id = 'test'; d.textContent = `Self-test ${pass ? 'PASSED' : 'FAILED'}\n` + lines.join('\n');
+  document.body.appendChild(d);
+  return pass;
+}
+
+// ---------- start ----------
+if (location.hash.length > 1) S = decode(location.hash);
+if (innerWidth >= 900) document.body.classList.add('open');
+syncUI();
+if (new URLSearchParams(location.search).has('test')) selfTest();
+changed();
+</script>
+</body>
+</html>
